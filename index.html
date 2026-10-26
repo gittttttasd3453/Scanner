@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b7a75">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Scanner</title>
+<style>
+:root{color-scheme:light dark;--bg:#f2f4f3;--fg:#17201e;--card:#fff;--ac:#0b7a75;--mu:#65726f;--bd:#dde3e1}
+@media(prefers-color-scheme:dark){:root{--bg:#121716;--fg:#e8eeec;--card:#1b2220;--mu:#93a29e;--bd:#2a3532;--ac:#2aa59e}}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{font:16px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
+header{padding:16px 16px 4px}
+h1{font-size:24px;font-weight:700;letter-spacing:-.02em}
+header p{color:var(--mu);font-size:14px}
+main{flex:1;overflow:auto;padding:12px 16px 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
+.pg{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:8px}
+.pg img{width:100%;aspect-ratio:3/4;object-fit:contain;background:#fff;border-radius:4px;display:block}
+.pg div{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:13px;color:var(--mu)}
+.empty{text-align:center;color:var(--mu);margin-top:22vh}
+button,label.btn{font:inherit;border-radius:10px;padding:12px 14px;background:var(--card);color:var(--fg);border:1px solid var(--bd);cursor:pointer;text-align:center}
+button:disabled{opacity:.4}
+.pri{background:var(--ac)!important;color:#fff!important;border-color:var(--ac)!important}
+.pg button{padding:3px 9px;border-radius:7px}
+nav{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--bd)}
+nav>*{flex:1}
+input[type=file]{display:none}
+#ed{position:fixed;inset:0;background:#0d1110;color:#fff;display:none;flex-direction:column;padding-top:env(safe-area-inset-top);z-index:5}
+#ed.on{display:flex}
+#ed[data-m=crop] .f,#ed[data-m=filter] .c{display:none!important}
+#stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:12px}
+#cv{touch-action:none;background:#fff}
+.bar{display:flex;gap:8px;padding:6px 12px;overflow-x:auto;align-items:center}
+.bar button{white-space:nowrap;background:#222b29;color:#fff;border-color:#34413e;flex:none}
+.bar button.sel{outline:2px solid var(--ac)}
+#act{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+#act button{flex:1}
+#thr{gap:12px;font-size:14px}
+#thr input{flex:1;accent-color:var(--ac)}
+#sheet{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;z-index:9}
+#sheet>div{background:var(--card);width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom));display:grid;gap:8px;border-radius:16px 16px 0 0}
+</style>
+</head>
+<body>
+<header><h1>Scanner</h1><p id="sub"></p></header>
+<main><p class="empty" id="empty">Scatta o carica una foto per iniziare</p><div class="grid" id="grid"></div></main>
+<nav>
+  <label class="btn pri">Scatta<input id="cam" type="file" accept="image/*" capture="environment"></label>
+  <label class="btn">Galleria<input id="gal" type="file" accept="image/*" multiple></label>
+  <button id="exp" disabled>Esporta</button>
+</nav>
+
+<div id="sheet" hidden><div>
+  <b>Esporta come</b>
+  <button class="pri" data-x="pdf">PDF multipagina</button>
+  <button data-x="jpg">JPG (una immagine per pagina)</button>
+  <button data-x="png">PNG (una immagine per pagina)</button>
+  <button id="no">Annulla</button>
+</div></div>
+
+<div id="ed" data-m="crop">
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <div class="bar f" id="thr" hidden><span>Intensità</span><input id="rng" type="range" min=".7" max=".98" step=".01" value=".88"></div>
+  <div class="bar f" id="chips">
+    <button data-f="orig">Originale</button><button data-f="sharp">Documento nitido</button><button data-f="bw">Scanner B/N</button><button data-f="gray">Scala di grigi</button>
+  </div>
+  <div class="bar" id="act">
+    <button class="c" id="x">Salta</button><button class="c" id="rot">Ruota</button><button class="c pri" id="nx">Avanti</button>
+    <button class="f" id="bk">Indietro</button><button class="f pri" id="add">Aggiungi pagina</button>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s), MAX=2200, pages=[], E={filter:'sharp',thr:.88,mode:'crop'};
+let queue=[], T, drag=-1, off=[0,0];
+
+/* ---------- caricamento ---------- */
+async function load(file){
+  let b;
+  try{b=await createImageBitmap(file,{imageOrientation:'from-image'})}
+  catch{b=await new Promise((ok,ko)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=ko;i.src=URL.createObjectURL(file)})}
+  const w=b.width||b.naturalWidth,h=b.height||b.naturalHeight,k=Math.min(1,MAX/Math.max(w,h));
+  const c=document.createElement('canvas');c.width=Math.round(w*k);c.height=Math.round(h*k);
+  c.getContext('2d').drawImage(b,0,0,c.width,c.height);return c;
+}
+function resetPts(){const w=E.src.width,h=E.src.height,m=.06;
+  E.pts=[[w*m,h*m],[w*(1-m),h*m],[w*(1-m),h*(1-m)],[w*m,h*(1-m)]]}
+async function next(){
+  const f=queue.shift();
+  if(!f){$('#ed').classList.remove('on');return}
+  E.src=await load(f);resetPts();$('#ed').classList.add('on');setMode('crop');
+}
+
+/* ---------- editor: UI e angoli ---------- */
+function setMode(m){
+  E.mode=m;$('#ed').dataset.m=m;ui();draw();
+}
+function ui(){
+  $('#thr').hidden=E.filter!=='bw';
+  document.querySelectorAll('[data-f]').forEach(b=>b.classList.toggle('sel',b.dataset.f===E.filter));
+}
+function draw(){
+  const src=E.mode==='crop'?E.src:E.out;if(!src)return;
+  const st=$('#stage'),k=Math.min((st.clientWidth-24)/src.width,(st.clientHeight-24)/src.height);E.k=k;
+  const cv=$('#cv');cv.width=Math.round(src.width*k);cv.height=Math.round(src.height*k);
+  const x=cv.getContext('2d');x.drawImage(src,0,0,cv.width,cv.height);
+  if(E.mode!=='crop')return;
+  x.beginPath();E.pts.forEach(([a,b],i)=>x[i?'lineTo':'moveTo'](a*k,b*k));x.closePath();
+  x.fillStyle='rgba(11,122,117,.2)';x.fill();x.strokeStyle='#0b7a75';x.lineWidth=2.5;x.stroke();
+  E.pts.forEach(([a,b])=>{x.beginPath();x.arc(a*k,b*k,13,0,7);x.fillStyle='#fff';x.fill();x.stroke()});
+}
+function pos(e){const cv=$('#cv'),r=cv.getBoundingClientRect();
+  return[(e.clientX-r.left)*cv.width/r.width/E.k,(e.clientY-r.top)*cv.height/r.height/E.k]}
+const cv=$('#cv');
+cv.onpointerdown=e=>{
+  if(E.mode!=='crop')return;const p=pos(e);drag=0;
+  E.pts.forEach((q,i)=>{if(Math.hypot(q[0]-p[0],q[1]-p[1])<Math.hypot(E.pts[drag][0]-p[0],E.pts[drag][1]-p[1]))drag=i});
+  off=[E.pts[drag][0]-p[0],E.pts[drag][1]-p[1]];cv.setPointerCapture(e.pointerId);
+};
+cv.onpointermove=e=>{
+  if(drag<0)return;const p=pos(e);
+  E.pts[drag]=[Math.min(Math.max(p[0]+off[0],0),E.src.width),Math.min(Math.max(p[1]+off[1],0),E.src.height)];draw();
+};
+cv.onpointerup=cv.onpointercancel=()=>drag=-1;
+addEventListener('resize',()=>$('#ed').classList.contains('on')&&draw());
+
+function rotate(){
+  const S=E.src,c=document.createElement('canvas');c.width=S.height;c.height=S.width;
+  const x=c.getContext('2d');x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(S,0,0);
+  E.src=c;resetPts();draw();
+}
+
+/* ---------- correzione prospettiva (omografia quadrato -> quadrilatero) ---------- */
+function warp(){
+  E.out=null;const P=E.pts,d=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+  let W=(d(P[0],P[1])+d(P[3],P[2]))/2,H=(d(P[0],P[3])+d(P[1],P[2]))/2;
+  const k=Math.min(1,MAX/Math.max(W,H));W=Math.round(W*k);H=Math.round(H*k);
+  if(W<20||H<20)return;
+  const[[x0,y0],[x1,y1],[x2,y2],[x3,y3]]=P;
+  const dx1=x1-x2,dx2=x3-x2,dy1=y1-y2,dy2=y3-y2,sx=x0-x1+x2-x3,sy=y0-y1+y2-y3;
+  const den=dx1*dy2-dx2*dy1||1e-9,g=(sx*dy2-dx2*sy)/den,h=(dx1*sy-sx*dy1)/den;
+  const a=x1-x0+g*x1,b=x3-x0+h*x3,c=y1-y0+g*y1,e=y3-y0+h*y3;
+  const S=E.src,sw=S.width,sh=S.height,sd=S.getContext('2d').getImageData(0,0,sw,sh).data;
+  const o=document.createElement('canvas');o.width=W;o.height=H;
+  const ox=o.getContext('2d'),od=ox.createImageData(W,H),D=od.data;
+  for(let y=0,i=0;y<H;y++){
+    const v=y/H;
+    for(let x=0;x<W;x++,i+=4){
+      const u=x/W,z=g*u+h*v+1;
+      const fx=Math.min(Math.max((a*u+b*v+x0)/z,0),sw-1.001),fy=Math.min(Math.max((c*u+e*v+y0)/z,0),sh-1.001);
+      const ix=fx|0,iy=fy|0,tx=fx-ix,ty=fy-iy,j=(iy*sw+ix)*4,j2=j+sw*4;
+      for(let q=0;q<3;q++)D[i+q]=(sd[j+q]*(1-tx)+sd[j+4+q]*tx)*(1-ty)+(sd[j2+q]*(1-tx)+sd[j2+4+q]*tx)*ty;
+      D[i+3]=255;
+    }
+  }
+  ox.putImageData(od,0,0);E.base=od;E.out=o;
+}
+
+/* ---------- filtri ---------- */
+function filt(){
+  const b=E.base,W=b.width,H=b.height,s=b.data,n=W*H,f=E.filter;
+  const ctx=E.out.getContext('2d'),od=ctx.createImageData(W,H),d=od.data;
+  const L=new Uint8ClampedArray(n);
+  for(let i=0;i<n;i++)L[i]=.299*s[4*i]+.587*s[4*i+1]+.114*s[4*i+2];
+  let B;
+  if(f==='sharp'||f==='bw'){ // luminosità locale del fondo (integral image) -> elimina ombre e ingiallimento
+    const I=new Uint32Array((W+1)*(H+1)),r=Math.max(8,W>>4),W1=W+1;
+    for(let y=0;y<H;y++){let row=0;for(let x=0;x<W;x++){row+=L[y*W+x];I[(y+1)*W1+x+1]=I[y*W1+x+1]+row}}
+    B=new Float32Array(n);
+    for(let y=0;y<H;y++){
+      const ya=Math.max(0,y-r),yb=Math.min(H,y+r+1);
+      for(let x=0;x<W;x++){
+        const xa=Math.max(0,x-r),xb=Math.min(W,x+r+1);
+        B[y*W+x]=(I[yb*W1+xb]-I[ya*W1+xb]-I[yb*W1+xa]+I[ya*W1+xa])/((xb-xa)*(yb-ya));
+      }
+    }
+  }
+  for(let i=0;i<n;i++){
+    const j=4*i;
+    if(f==='bw'){d[j]=d[j+1]=d[j+2]=L[i]<B[i]*E.thr?0:255}
+    else if(f==='gray'){d[j]=d[j+1]=d[j+2]=(L[i]-128)*1.15+128}
+    else if(f==='sharp'){const k=Math.min(3,255/(B[i]*1.04+1));for(let q=0;q<3;q++)d[j+q]=(s[j+q]*k-128)*1.2+128}
+    else{d[j]=s[j];d[j+1]=s[j+1];d[j+2]=s[j+2]}
+    d[j+3]=255;
+  }
+  ctx.putImageData(od,0,0);draw();
+}
+
+/* ---------- pagine ---------- */
+async function addPage(){
+  const o=E.out,blob=await new Promise(r=>o.toBlob(r,'image/png'));
+  const t=document.createElement('canvas'),k=240/Math.max(o.width,o.height);
+  t.width=o.width*k|0;t.height=o.height*k|0;t.getContext('2d').drawImage(o,0,0,t.width,t.height);
+  pages.push({blob,w:o.width,h:o.height,th:t.toDataURL('image/jpeg',.8)});render();next();
+}
+function render(){
+  const n=pages.length;
+  $('#sub').textContent=n?`${n} pagin${n>1?'e':'a'} nel documento`:'Nessuna pagina';
+  $('#empty').hidden=!!n;$('#exp').disabled=!n;
+  $('#grid').innerHTML=pages.map((p,i)=>`<div class="pg"><img src="${p.th}" alt="Pagina ${i+1}"><div><button onclick="mv(${i},-1)">◀</button>${i+1}<button onclick="mv(${i},1)">▶</button><button onclick="del(${i})">✕</button></div></div>`).join('');
+}
+function mv(i,d){const j=i+d;if(j<0||j>=pages.length)return;[pages[i],pages[j]]=[pages[j],pages[i]];render()}
+function del(i){pages.splice(i,1);render()}
+
+/* ---------- esportazione ---------- */
+async function jpeg(p,q=.92){
+  const bm=await createImageBitmap(p.blob),c=document.createElement('canvas');c.width=p.w;c.height=p.h;
+  const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,p.w,p.h);x.drawImage(bm,0,0);
+  return new Promise(r=>c.toBlob(r,'image/jpeg',q));
+}
+function save(blob,name){
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
+  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4e4);
+}
+function pdf(ps){ // PDF scritto a mano: una pagina A4 per immagine JPEG, nessuna libreria
+  const enc=new TextEncoder(),parts=[],off=[];let len=0;
+  const add=d=>{if(typeof d==='string')d=enc.encode(d);parts.push(d);len+=d.length};
+  const obj=(n,body,bin)=>{off[n]=len;add(`${n} 0 obj\n${body}`);if(bin){add(bin);add('\nendstream')}add('\nendobj\n')};
+  const N=ps.length;
+  add('%PDF-1.4\n');
+  obj(1,'<</Type/Catalog/Pages 2 0 R>>');
+  obj(2,`<</Type/Pages/Count ${N}/Kids[${ps.map((_,i)=>`${3+3*i} 0 R`).join(' ')}]>>`);
+  ps.forEach((p,i)=>{
+    const land=p.w>p.h,PW=land?841.89:595.28,PH=land?595.28:841.89,k=Math.min(PW/p.w,PH/p.h);
+    const w=p.w*k,h=p.h*k,cs=`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${((PW-w)/2).toFixed(2)} ${((PH-h)/2).toFixed(2)} cm /Im0 Do Q`;
+    obj(3+3*i,`<</Type/Page/Parent 2 0 R/MediaBox[0 0 ${PW} ${PH}]/Resources<</XObject<</Im0 ${5+3*i} 0 R>>>>/Contents ${4+3*i} 0 R>>`);
+    obj(4+3*i,`<</Length ${cs.length}>>\nstream\n${cs}\nendstream`);
+    obj(5+3*i,`<</Type/XObject/Subtype/Image/Width ${p.w}/Height ${p.h}/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode/Length ${p.jpg.length}>>\nstream\n`,p.jpg);
+  });
+  const xr=len,M=3+3*N;
+  add(`xref\n0 ${M}\n0000000000 65535 f \n`);
+  for(let i=1;i<M;i++)add(String(off[i]).padStart(10,'0')+' 00000 n \n');
+  add(`trailer\n<</Size ${M}/Root 1 0 R>>\nstartxref\n${xr}\n%%EOF`);
+  return new Blob(parts,{type:'application/pdf'});
+}
+async function exportAs(fmt){
+  $('#sheet').hidden=true;const btn=$('#exp');btn.textContent='Attendi…';btn.disabled=true;
+  const n='scan_'+new Date().toISOString().slice(0,19).replace(/\D/g,'');
+  try{
+    if(fmt==='pdf'){
+      const js=[];
+      for(const p of pages)js.push({w:p.w,h:p.h,jpg:new Uint8Array(await(await jpeg(p)).arrayBuffer())});
+      save(pdf(js),n+'.pdf');
+    }else for(let i=0;i<pages.length;i++){
+      save(fmt==='png'?pages[i].blob:await jpeg(pages[i],.95),`${n}_${i+1}.${fmt}`);
+      await new Promise(r=>setTimeout(r,300));
+    }
+  }finally{btn.textContent='Esporta';btn.disabled=!pages.length}
+}
+
+/* ---------- eventi ---------- */
+$('#cam').onchange=$('#gal').onchange=e=>{
+  queue.push(...e.target.files);e.target.value='';
+  if(!$('#ed').classList.contains('on'))next();
+};
+$('#x').onclick=next;
+$('#rot').onclick=rotate;
+$('#nx').onclick=()=>{warp();if(!E.out)return;setMode('filter');filt()};
+$('#bk').onclick=()=>setMode('crop');
+$('#add').onclick=addPage;
+document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{E.filter=b.dataset.f;ui();filt()});
+$('#rng').oninput=e=>{E.thr=+e.target.value;clearTimeout(T);T=setTimeout(filt,40)};
+$('#exp').onclick=()=>$('#sheet').hidden=false;
+$('#no').onclick=()=>$('#sheet').hidden=true;
+document.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>exportAs(b.dataset.x));
+render();
+if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
