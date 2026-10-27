@@ -41,8 +41,8 @@ input[type=file]{display:none}
 .bar button.sel{outline:2px solid var(--ac)}
 #act{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
 #act button{flex:1}
-#thr{gap:12px;font-size:14px}
-#thr input{flex:1;accent-color:var(--ac)}
+#thr,#shp{gap:12px;font-size:14px}
+#thr input,#shp input{flex:1;accent-color:var(--ac)}
 #sheet{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;z-index:9}
 #sheet>div{background:var(--card);width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom));display:grid;gap:8px;border-radius:16px 16px 0 0}
 </style>
@@ -67,17 +67,18 @@ input[type=file]{display:none}
 <div id="ed" data-m="crop">
   <div id="stage"><canvas id="cv"></canvas></div>
   <div class="bar f" id="thr" hidden><span>Intensità</span><input id="rng" type="range" min=".7" max=".98" step=".01" value=".88"></div>
+  <div class="bar f" id="shp"><span>Nitidezza</span><input id="sh" type="range" min="0" max="1.5" step=".1" value=".6"></div>
   <div class="bar f" id="chips">
     <button data-f="orig">Originale</button><button data-f="sharp">Documento nitido</button><button data-f="bw">Scanner B/N</button><button data-f="gray">Scala di grigi</button>
   </div>
   <div class="bar" id="act">
-    <button class="c" id="x">Salta</button><button class="c" id="rot">Ruota</button><button class="c pri" id="nx">Avanti</button>
+    <button class="c" id="x">Salta</button><button class="c" id="rot">Ruota</button><button class="c" id="au">Auto</button><button class="c pri" id="nx">Avanti</button>
     <button class="f" id="bk">Indietro</button><button class="f pri" id="add">Aggiungi pagina</button>
   </div>
 </div>
 
 <script>
-const $=s=>document.querySelector(s), MAX=2200, pages=[], E={filter:'sharp',thr:.88,mode:'crop'};
+const $=s=>document.querySelector(s), MAX=3000, pages=[], E={filter:'sharp',thr:.88,sh:.6,mode:'crop'};
 let queue=[], T, drag=-1, off=[0,0];
 
 /* ---------- caricamento ---------- */
@@ -90,7 +91,33 @@ async function load(file){
   c.getContext('2d').drawImage(b,0,0,c.width,c.height);return c;
 }
 function resetPts(){const w=E.src.width,h=E.src.height,m=.06;
-  E.pts=[[w*m,h*m],[w*(1-m),h*m],[w*(1-m),h*(1-m)],[w*m,h*(1-m)]]}
+  E.pts=[[w*m,h*m],[w*(1-m),h*m],[w*(1-m),h*(1-m)],[w*m,h*(1-m)]];
+  try{autoPts()}catch{}}
+/* riconoscimento automatico del foglio: area chiara connessa al centro (soglia di Otsu) */
+function autoPts(){
+  const S=E.src,k=240/Math.max(S.width,S.height),w=Math.round(S.width*k),h=Math.round(S.height*k),N=w*h;
+  const c=document.createElement('canvas');c.width=w;c.height=h;
+  const x=c.getContext('2d');x.drawImage(S,0,0,w,h);
+  const d=x.getImageData(0,0,w,h).data,g=new Uint8Array(N),hs=new Array(256).fill(0);
+  for(let i=0;i<N;i++){g[i]=.299*d[4*i]+.587*d[4*i+1]+.114*d[4*i+2];hs[g[i]]++}
+  let tot=0,sb=0,wb=0,best=0,t=128;
+  for(let i=0;i<256;i++)tot+=i*hs[i];
+  for(let i=0;i<256;i++){
+    wb+=hs[i];const wf=N-wb;if(!wb||!wf)continue;sb+=i*hs[i];
+    const v=wb*wf*Math.pow(sb/wb-(tot-sb)/wf,2);if(v>best){best=v;t=i}
+  }
+  const m=new Uint8Array(N),st=[(h>>1)*w+(w>>1)];
+  if(g[st[0]]<=t)return;
+  let A=[1e9],B=[-1e9],C=[-1e9],D=[1e9],n=0;m[st[0]]=1;
+  while(st.length){
+    const i=st.pop(),px=i%w,py=(i/w)|0,s1=px+py,s2=px-py;n++;
+    if(s1<A[0])A=[s1,px,py];if(s1>C[0])C=[s1,px,py];if(s2>B[0])B=[s2,px,py];if(s2<D[0])D=[s2,px,py];
+    for(const j of[px>0?i-1:-1,px<w-1?i+1:-1,i-w,i+w])
+      if(j>=0&&j<N&&!m[j]&&g[j]>t){m[j]=1;st.push(j)}
+  }
+  if(n<N*.2||n>N*.97)return;
+  E.pts=[A,B,C,D].map(p=>[p[1]/k,p[2]/k]);
+}
 async function next(){
   const f=queue.shift();
   if(!f){$('#ed').classList.remove('on');return}
@@ -163,8 +190,17 @@ function warp(){
 }
 
 /* ---------- filtri ---------- */
+function sharpen(s,W,H,a){ // maschera di nitidezza: raggio proporzionale alla risoluzione
+  if(!a)return s;
+  const o=new Uint8ClampedArray(s),r=Math.max(1,Math.round(W/1500)),R=4*W*r;
+  for(let y=r;y<H-r;y++)for(let x=r;x<W-r;x++){
+    const i=4*(y*W+x);
+    for(let q=0;q<3;q++){const p=i+q;o[p]=s[p]+a*(4*s[p]-s[p-R]-s[p+R]-s[p-4*r]-s[p+4*r])}
+  }
+  return o;
+}
 function filt(){
-  const b=E.base,W=b.width,H=b.height,s=b.data,n=W*H,f=E.filter;
+  const b=E.base,W=b.width,H=b.height,n=W*H,f=E.filter,s=sharpen(b.data,W,H,f==='orig'?0:E.sh);
   const ctx=E.out.getContext('2d'),od=ctx.createImageData(W,H),d=od.data;
   const L=new Uint8ClampedArray(n);
   for(let i=0;i<n;i++)L[i]=.299*s[4*i]+.587*s[4*i+1]+.114*s[4*i+2];
@@ -261,11 +297,13 @@ $('#cam').onchange=$('#gal').onchange=e=>{
 };
 $('#x').onclick=next;
 $('#rot').onclick=rotate;
+$('#au').onclick=()=>{resetPts();draw()};
 $('#nx').onclick=()=>{warp();if(!E.out)return;setMode('filter');filt()};
 $('#bk').onclick=()=>setMode('crop');
 $('#add').onclick=addPage;
 document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{E.filter=b.dataset.f;ui();filt()});
 $('#rng').oninput=e=>{E.thr=+e.target.value;clearTimeout(T);T=setTimeout(filt,40)};
+$('#sh').oninput=e=>{E.sh=+e.target.value;clearTimeout(T);T=setTimeout(filt,40)};
 $('#exp').onclick=()=>$('#sheet').hidden=false;
 $('#no').onclick=()=>$('#sheet').hidden=true;
 document.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>exportAs(b.dataset.x));
