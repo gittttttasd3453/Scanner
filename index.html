@@ -15,8 +15,8 @@
 [hidden]{display:none!important}
 html,body{height:100%}
 body{font:16px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
-header{padding:16px 16px 4px}
-h1{font-size:24px;font-weight:700;letter-spacing:-.02em}
+header{padding:16px 16px 4px;display:flex;align-items:center;gap:8px}header>div{flex:1;min-width:0}header button{padding:6px 10px;font-size:14px}
+h1{font-size:24px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 header p{color:var(--mu);font-size:14px}
 main{flex:1;overflow:auto;padding:12px 16px 16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
@@ -45,20 +45,24 @@ input[type=file]{display:none}
 #thr input,#shp input{flex:1;accent-color:var(--ac)}
 #sheet{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;z-index:9}
 #sheet>div{background:var(--card);width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom));display:grid;gap:8px;border-radius:16px 16px 0 0}
+.dc{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:8px;margin-bottom:10px;cursor:pointer}
+.dc img{width:56px;height:74px;object-fit:contain;background:#fff;border-radius:4px}
+.dc b{display:block}.dc span{color:var(--mu);font-size:13px}
 </style>
 </head>
 <body>
-<header><h1>Scanner</h1><p id="sub"></p></header>
-<main><p class="empty" id="empty">Scatta o carica una foto per iniziare</p><div class="grid" id="grid"></div></main>
+<header><button id="back" hidden>←</button><div><h1 id="ttl">Scanner</h1><p id="sub"></p></div><button id="ren" hidden>Rinomina</button><button id="rm" hidden>Elimina</button></header>
+<main><p class="empty" id="empty">Nessun documento. Tocca Nuova scansione per iniziare.</p><div id="docs"></div><div class="grid" id="grid"></div></main>
 <nav>
-  <label class="btn pri">Scatta<input id="cam" type="file" accept="image/*" capture="environment"></label>
+  <label class="btn pri"><span id="l1">Nuova scansione</span><input id="cam" type="file" accept="image/*" capture="environment"></label>
   <label class="btn">Galleria<input id="gal" type="file" accept="image/*" multiple></label>
-  <button id="exp" disabled>Esporta</button>
+  <button id="exp" hidden>Esporta</button>
 </nav>
 
 <div id="sheet" hidden><div>
   <b>Esporta come</b>
-  <button class="pri" data-x="pdf">PDF multipagina</button>
+  <button class="pri" id="shr">Condividi PDF</button>
+  <button id="dl">Salva PDF sul dispositivo</button>
   <button data-x="jpg">JPG (una immagine per pagina)</button>
   <button data-x="png">PNG (una immagine per pagina)</button>
   <button id="no">Annulla</button>
@@ -78,7 +82,7 @@ input[type=file]{display:none}
 </div>
 
 <script>
-const $=s=>document.querySelector(s), MAX=3000, pages=[], E={filter:'sharp',thr:.88,sh:.6,mode:'crop'};
+const $=s=>document.querySelector(s), MAX=3000, E={filter:'sharp',thr:.88,sh:.6,mode:'crop'};
 let queue=[], T, drag=-1, off=[0,0];
 
 /* ---------- caricamento ---------- */
@@ -228,27 +232,51 @@ function filt(){
   ctx.putImageData(od,0,0);draw();
 }
 
-/* ---------- pagine ---------- */
+/* ---------- libreria documenti (salvati nel browser con IndexedDB) ---------- */
+let db,docs=[],cur=null;
+const esc=t=>t.replace(/[&<>"]/g,c=>'&#'+c.charCodeAt(0)+';');
+const tx=(m,f)=>new Promise((ok,ko)=>{const t=db.transaction('docs',m),r=f(t.objectStore('docs'));t.oncomplete=()=>ok(r.result);t.onerror=()=>ko(t.error)});
+const persist=()=>tx('readwrite',x=>x.put(cur)).catch(()=>alert('Salvataggio non riuscito: spazio insufficiente o archivio non disponibile.'));
+async function init(){
+  try{
+    db=await new Promise((ok,ko)=>{const r=indexedDB.open('scanner',1);r.onupgradeneeded=()=>r.result.createObjectStore('docs',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)});
+    docs=await tx('readonly',x=>x.getAll());
+    if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+  }catch{}
+  render();
+}
 async function addPage(){
-  const o=E.out,blob=await new Promise(r=>o.toBlob(r,'image/png'));
+  const o=E.out,jp=E.filter==='sharp'||E.filter==='orig';
+  const blob=await new Promise(r=>o.toBlob(r,jp?'image/jpeg':'image/png',.93));
   const t=document.createElement('canvas'),k=240/Math.max(o.width,o.height);
   t.width=o.width*k|0;t.height=o.height*k|0;t.getContext('2d').drawImage(o,0,0,t.width,t.height);
-  pages.push({blob,w:o.width,h:o.height,th:t.toDataURL('image/jpeg',.8)});render();next();
+  if(!cur){const d=new Date();cur={id:+d,name:'Scansione '+d.toLocaleString('it-IT',{dateStyle:'short',timeStyle:'short'}),date:+d,pages:[]};docs.push(cur)}
+  cur.pages.push({blob,w:o.width,h:o.height,th:t.toDataURL('image/jpeg',.8)});cur.date=Date.now();
+  await persist();render();next();
 }
 function render(){
-  const n=pages.length;
-  $('#sub').textContent=n?`${n} pagin${n>1?'e':'a'} nel documento`:'Nessuna pagina';
-  $('#empty').hidden=!!n;$('#exp').disabled=!n;
-  $('#grid').innerHTML=pages.map((p,i)=>`<div class="pg"><img src="${p.th}" alt="Pagina ${i+1}"><div><button onclick="mv(${i},-1)">◀</button>${i+1}<button onclick="mv(${i},1)">▶</button><button onclick="del(${i})">✕</button></div></div>`).join('');
+  const n=cur?cur.pages.length:0,pl=k=>k==1?'a':'e';
+  $('#back').hidden=$('#ren').hidden=$('#rm').hidden=$('#exp').hidden=!cur;
+  $('#ttl').textContent=cur?cur.name:'Documenti';
+  $('#sub').textContent=cur?`PDF · ${n} pagin${pl(n)}`:`${docs.length} salvat${docs.length==1?'o':'i'}`;
+  $('#empty').hidden=!!cur||!!docs.length;
+  $('#l1').textContent=cur?'Scatta pagina':'Nuova scansione';
+  $('#docs').innerHTML=cur?'':docs.sort((a,b)=>b.date-a.date).map(d=>`<div class="dc" onclick="openDoc(${d.id})"><img src="${d.pages[0]?d.pages[0].th:''}" alt=""><div><b>${esc(d.name)}</b><span>PDF · ${d.pages.length} pagin${pl(d.pages.length)} · ${new Date(d.date).toLocaleDateString('it-IT')}</span></div></div>`).join('');
+  $('#grid').innerHTML=cur?cur.pages.map((p,i)=>`<div class="pg"><img src="${p.th}" alt="Pagina ${i+1}"><div><button onclick="mv(${i},-1)">◀</button>${i+1}<button onclick="mv(${i},1)">▶</button><button onclick="del(${i})">✕</button></div></div>`).join(''):'';
 }
-function mv(i,d){const j=i+d;if(j<0||j>=pages.length)return;[pages[i],pages[j]]=[pages[j],pages[i]];render()}
-function del(i){pages.splice(i,1);render()}
+function openDoc(id){cur=docs.find(d=>d.id===id);render()}
+function closeDoc(){cur=null;render()}
+async function dropDoc(){await tx('readwrite',x=>x.delete(cur.id));docs=docs.filter(d=>d!==cur);closeDoc()}
+async function rename(){const v=prompt('Nome del documento',cur.name);if(v&&v.trim()){cur.name=v.trim();await persist();render()}}
+async function mv(i,d){const j=i+d,p=cur.pages;if(j<0||j>=p.length)return;[p[i],p[j]]=[p[j],p[i]];await persist();render()}
+async function del(i){cur.pages.splice(i,1);if(!cur.pages.length)return dropDoc();await persist();render()}
 
 /* ---------- esportazione ---------- */
-async function jpeg(p,q=.92){
+async function conv(p,type,q){
+  if(p.blob.type===type)return p.blob;
   const bm=await createImageBitmap(p.blob),c=document.createElement('canvas');c.width=p.w;c.height=p.h;
   const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,p.w,p.h);x.drawImage(bm,0,0);
-  return new Promise(r=>c.toBlob(r,'image/jpeg',q));
+  return new Promise(r=>c.toBlob(r,type,q));
 }
 function save(blob,name){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
@@ -275,19 +303,24 @@ function pdf(ps){ // PDF scritto a mano: una pagina A4 per immagine JPEG, nessun
   add(`trailer\n<</Size ${M}/Root 1 0 R>>\nstartxref\n${xr}\n%%EOF`);
   return new Blob(parts,{type:'application/pdf'});
 }
+const fname=()=>cur.name.replace(/[^\p{L}\p{N}\s._-]+/gu,'-').trim()||'scansione';
+let pdfBlob=null;
+async function buildPdf(){
+  const js=[];
+  for(const p of cur.pages)js.push({w:p.w,h:p.h,jpg:new Uint8Array(await(await conv(p,'image/jpeg',.92)).arrayBuffer())});
+  return pdf(js);
+}
+async function openSheet(){ // il PDF viene preparato prima, così "Condividi" parte subito dal tocco
+  const b=[$('#shr'),$('#dl')];pdfBlob=null;b.forEach(x=>x.disabled=true);
+  $('#shr').textContent='Preparo il PDF…';$('#sheet').hidden=false;
+  try{pdfBlob=await buildPdf()}catch{}
+  $('#shr').textContent='Condividi PDF';b.forEach(x=>x.disabled=!pdfBlob);
+}
 async function exportAs(fmt){
   $('#sheet').hidden=true;const btn=$('#exp');btn.textContent='Attendi…';btn.disabled=true;
-  const n='scan_'+new Date().toISOString().slice(0,19).replace(/\D/g,'');
-  try{
-    if(fmt==='pdf'){
-      const js=[];
-      for(const p of pages)js.push({w:p.w,h:p.h,jpg:new Uint8Array(await(await jpeg(p)).arrayBuffer())});
-      save(pdf(js),n+'.pdf');
-    }else for(let i=0;i<pages.length;i++){
-      save(fmt==='png'?pages[i].blob:await jpeg(pages[i],.95),`${n}_${i+1}.${fmt}`);
-      await new Promise(r=>setTimeout(r,300));
-    }
-  }finally{btn.textContent='Esporta';btn.disabled=!pages.length}
+  const n=fname(),ty=fmt==='png'?'image/png':'image/jpeg';
+  try{for(let i=0;i<cur.pages.length;i++){save(await conv(cur.pages[i],ty,.95),`${n}_${i+1}.${fmt}`);await new Promise(r=>setTimeout(r,300))}}
+  finally{btn.textContent='Esporta';btn.disabled=false}
 }
 
 /* ---------- eventi ---------- */
@@ -304,10 +337,21 @@ $('#add').onclick=addPage;
 document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{E.filter=b.dataset.f;ui();filt()});
 $('#rng').oninput=e=>{E.thr=+e.target.value;clearTimeout(T);T=setTimeout(filt,40)};
 $('#sh').oninput=e=>{E.sh=+e.target.value;clearTimeout(T);T=setTimeout(filt,40)};
-$('#exp').onclick=()=>$('#sheet').hidden=false;
+$('#exp').onclick=openSheet;
+$('#back').onclick=closeDoc;
+$('#ren').onclick=rename;
+$('#rm').onclick=()=>{if(confirm('Eliminare "'+cur.name+'"?'))dropDoc()};
+$('#dl').onclick=()=>{$('#sheet').hidden=true;save(pdfBlob,fname()+'.pdf')};
+$('#shr').onclick=async()=>{
+  const f=new File([pdfBlob],fname()+'.pdf',{type:'application/pdf'});$('#sheet').hidden=true;
+  try{
+    if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f],title:cur.name});
+    else save(pdfBlob,f.name);
+  }catch(e){if(e.name!=='AbortError')save(pdfBlob,f.name)}
+};
 $('#no').onclick=()=>$('#sheet').hidden=true;
 document.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>exportAs(b.dataset.x));
-render();
+init();
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js');
 </script>
 </body>
